@@ -122,12 +122,12 @@
           <AgentChart :ticketData="reportData" mode="Agente" title="Top 10 Agentes" :limit="10" type="bar" multiColor />
         </section>
 
-        <section class="space-y-6 pdf-section">
+        <section class="space-y-6 pdf-section pdf-table">
           <div class="flex items-center gap-4">
             <h2 class="text-xs font-black text-slate-400 uppercase tracking-[0.4em] whitespace-nowrap">VI. Detalle de Tickets</h2>
             <div class="h-px bg-slate-200 flex-1"></div>
           </div>
-          <TicketTable :tickets="reportData" />
+          <TicketTable :tickets="reportData" class="ticket-table w-full"/>
         </section>
       </div>
     </main>
@@ -136,7 +136,7 @@
 
 <script setup>
 import { ref, computed } from 'vue';
-import { LayoutDashboard, Download, ClipboardList, Timer, CheckCircle2, AlertCircle, Clock, Zap } from 'lucide-vue-next';
+import { Download, ClipboardList, Timer, CheckCircle2, AlertCircle, Clock, Zap } from 'lucide-vue-next';
 import { differenceInDays, parse, format } from 'date-fns';
 import enUS from 'date-fns/locale/en-US';
 import { toJpeg } from 'html-to-image';
@@ -152,111 +152,137 @@ import TicketTable from './components/TicketTable.vue';
 const reportData = ref([]);
 const isExporting = ref(false);
 
+/* ===================== DATA ===================== */
+
 const handleNewData = (p) => { 
-  const rows = p.rows.map(row => {
+  reportData.value = p.rows.map(row => {
     if (row.creado) {
-      const date = parse(row.creado, 'MMM d, yyyy', new Date(), { locale: enUS });
-      row.dayOfWeek = format(date, 'EEEE', { locale: enUS });
+      const d = parse(row.creado, 'MMM d, yyyy', new Date(), { locale: enUS });
+      row.dayOfWeek = format(d, 'EEEE', { locale: enUS });
     }
     return row;
   });
-  reportData.value = rows; 
 };
 
 const dateRange = computed(() => {
   if (!reportData.value.length) return '';
-  const parseD = (s) => s ? parse(s, 'MMM d, yyyy', new Date(), { locale: enUS }) : null;
-  const dates = reportData.value.map(t => parseD(t.creado)).filter(d => d).sort((a,b) => a-b);
-  return dates.length ? `${format(dates[0], 'dd MMM yyyy')} - ${format(dates[dates.length-1], 'dd MMM yyyy')}` : 'N/A';
+  const dates = reportData.value
+    .map(t => t.creado ? parse(t.creado, 'MMM d, yyyy', new Date(), { locale: enUS }) : null)
+    .filter(Boolean)
+    .sort((a,b) => a-b);
+  return `${format(dates[0], 'dd MMM yyyy')} - ${format(dates.at(-1), 'dd MMM yyyy')}`;
 });
 
 const metrics = computed(() => {
   const data = reportData.value;
-  if (!data.length) return { avgTTR: 0, sla: 0, criticals: 0, open: 0, resolvedCount: 0, slaRisk: 0, topics: [], mostCriticalSystem: 'N/A' };
+  if (!data.length) return {};
 
-  const parseD = (s) => s ? parse(s, 'MMM d, yyyy', new Date(), { locale: enUS }) : null;
-  const resolvedArr = data.filter(t => t.Resuelto && t.creado);
-  const totalDays = resolvedArr.reduce((acc, t) => acc + Math.abs(differenceInDays(parseD(t.Resuelto), parseD(t.creado))), 0);
-  
-  const words = data.map(t => t.Detalle).join(' ').toLowerCase().split(/\W+/);
-  const topics = [...new Set(words.filter(w => w.length > 5))].slice(0, 3);
-  const sysCounts = {};
-  data.filter(t => t.Prioridad.includes('1')).forEach(t => sysCounts[t.Sistema] = (sysCounts[t.Sistema] || 0) + 1);
+  const resolved = data.filter(t => ['CLOSED','RESOLVED'].includes(t.Status.toUpperCase()));
+  const totalDays = resolved.reduce((a,t) =>
+    a + Math.abs(differenceInDays(
+      parse(t.Resuelto,'MMM d, yyyy',new Date(),{locale:enUS}),
+      parse(t.creado,'MMM d, yyyy',new Date(),{locale:enUS})
+    )),0);
+
+  const criticals = data.filter(t => t.Prioridad?.includes('1') && !resolved.includes(t));
 
   return {
-    open: data.filter(t => !['CLOSED', 'RESOLVED'].includes(t.Status.toUpperCase())).length,
-    resolvedCount: data.filter(t => ['CLOSED', 'RESOLVED'].includes(t.Status.toUpperCase())).length,
-    avgTTR: resolvedArr.length ? (totalDays / resolvedArr.length).toFixed(1) : 0,
-    sla: ((data.filter(t => ['CLOSED', 'RESOLVED'].includes(t.Status.toUpperCase())).length / data.length) * 100).toFixed(0),
-    criticals: data.filter(t => t.Prioridad.includes('1') && !['CLOSED','RESOLVED'].includes(t.Status)).length,
-    slaRisk: data.filter(t => t.Prioridad.includes('1') && !['CLOSED','RESOLVED'].includes(t.Status)).length,
-    topics,
-    mostCriticalSystem: Object.keys(sysCounts).sort((a,b) => sysCounts[b] - sysCounts[a])[0] || 'N/A'
+    open: data.length - resolved.length,
+    resolvedCount: resolved.length,
+    avgTTR: resolved.length ? (totalDays / resolved.length).toFixed(1) : 0,
+    sla: ((resolved.length / data.length) * 100).toFixed(0),
+    criticals: criticals.length,
+    slaRisk: criticals.length,
+    topics: [...new Set(data.map(t => t.Detalle).join(' ').split(/\W+/).filter(w => w.length > 5))].slice(0,3),
+    mostCriticalSystem: criticals[0]?.Sistema || 'N/A'
   };
 });
+
+/* ===================== PDF ===================== */
 
 const exportFullPDF = async () => {
   if (isExporting.value) return;
   isExporting.value = true;
 
   try {
-    const element = document.getElementById('dashboard-to-print');
-    if (!element) throw new Error('Elemento no encontrado');
-
-    // 1. Pausa para estabilizar gráficos
-    await new Promise(r => setTimeout(r, 1000));
-
-    // 2. Captura con eliminación de márgenes CSS
-    const dataUrl = await toJpeg(element, {
-      pixelRatio: 2,
-      quality: 0.95,
-      backgroundColor: '#f8fafc',
-      // FORZAMOS ELIMINACIÓN DE PADDING/MARGIN INTERNO
-      style: {
-        padding: '0',
-        margin: '0',
-        maxWidth: 'none',
-        width: element.scrollWidth + 'px'
-      }
-    });
-
-    // 3. Configuración de PDF Horizontal A4 (297 x 210 mm)
     const pdf = new jsPDF('l', 'mm', 'a4');
-    const pageWidth = 297; 
+    const pageWidth = 297;
     const pageHeight = 210;
 
-    const img = new Image();
-    img.src = dataUrl;
-    await new Promise(resolve => (img.onload = resolve));
+    const sections = document.querySelectorAll('.pdf-section');
 
-    // Calculamos dimensiones para que el ancho sea EXACTAMENTE el de la hoja
-    const imgWidth = pageWidth;
-    const imgHeight = (img.height * imgWidth) / img.width;
+    for (const section of sections) {
+      // 🔴 SALTAMOS LA TABLA
+      if (section.classList.contains('pdf-table')) continue;
 
-    let heightLeft = imgHeight;
-    let position = 0;
+      const imgData = await toJpeg(section, {
+        pixelRatio: 2,
+        backgroundColor: '#f8fafc',
+      });
 
-    // 4. Inserción de imagen en la coordenada X = 0 (Borde Izquierdo)
-    // El primer '0' es la coordenada X, el segundo 'position' es Y
-    pdf.addImage(dataUrl, 'JPEG', 10, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
+      const img = new Image();
+      img.src = imgData;
+      await new Promise(r => img.onload = r);
 
-    // Paginación si el contenido excede el alto de la hoja
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight;
+      const imgHeight = (img.height * pageWidth) / img.width;
       pdf.addPage();
-      // Nuevamente X = 0 para eliminar margen izquierdo en páginas siguientes
-      pdf.addImage(dataUrl, 'JPEG', 10, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
+      pdf.addImage(imgData, 'JPEG', 0, 0, pageWidth, imgHeight);
     }
 
-    pdf.save(`Reporte_Operatividad_FullWidth_${Date.now()}.pdf`);
-    
-  } catch (err) {
-    console.error('Error en PDF Full Width:', err);
-    alert('No se pudo generar el PDF sin márgenes.');
+    // 🔥 TABLA PAGINADA CORRECTAMENTE
+    await exportTicketTable(pdf);
+
+    pdf.deletePage(1); // elimina página en blanco inicial
+    pdf.save(`Reporte_Operatividad_${Date.now()}.pdf`);
+
+  } catch (e) {
+    console.error(e);
+    alert('Error al generar PDF');
   } finally {
     isExporting.value = false;
+  }
+};
+
+/* ===================== TABLE PAGINATION ===================== */
+
+const exportTicketTable = async (pdf) => {
+  const table = document.querySelector('.pdf-table table');
+  if (!table) return;
+
+  const rows = [...table.querySelectorAll('tbody tr')];
+  const header = table.querySelector('thead');
+  const rowsPerPage = 12;
+  const pageWidth = 297;
+
+  for (let i = 0; i < rows.length; i += rowsPerPage) {
+    const wrapper = document.createElement('div');
+    wrapper.style.padding = '20px';
+    wrapper.style.background = '#f8fafc';
+
+    const t = table.cloneNode(false);
+    t.appendChild(header.cloneNode(true));
+
+    const tbody = document.createElement('tbody');
+    rows.slice(i, i + rowsPerPage).forEach(r => tbody.appendChild(r.cloneNode(true)));
+    t.appendChild(tbody);
+
+    wrapper.appendChild(t);
+    document.body.appendChild(wrapper);
+
+    const imgData = await toJpeg(wrapper, {
+      pixelRatio: 2,
+      backgroundColor: '#f8fafc',
+    });
+
+    document.body.removeChild(wrapper);
+
+    const img = new Image();
+    img.src = imgData;
+    await new Promise(r => img.onload = r);
+
+    const imgHeight = (img.height * pageWidth) / img.width;
+    pdf.addPage();
+    pdf.addImage(imgData, 'JPEG', 0, 10, pageWidth, imgHeight);
   }
 };
 </script>
