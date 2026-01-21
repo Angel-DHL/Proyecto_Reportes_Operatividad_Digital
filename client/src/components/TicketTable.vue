@@ -38,7 +38,7 @@
             </td>
             <td class="px-6 py-4 text-slate-500 whitespace-nowrap">{{ ticket.Agente || 'N/A' }}</td>
             <td class="px-6 py-4 text-slate-500 whitespace-nowrap">{{ ticket.Solicitante || 'N/A' }}</td>
-            <td class="px-6 py-4 font-medium text-slate-700 whitespace-nowrap">{{ ticket.Sistema }}</td>
+            <td class="px-6 py-4 font-medium text-slate-700 whitespace-nowrap">{{ ticket.Sistema || 'N/A' }}</td>
           </tr>
         </tbody>
       </table>
